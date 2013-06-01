@@ -4,9 +4,9 @@ use base 'Mojolicious::Plugin';
 use strict;
 use warnings;
 
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 
-our $ERROR = {
+our %ERROR_MSG = (
 	1 => 'Unknown error occured',
 	2 => 'User authorization failed',
 	3 => 'Request denied',
@@ -15,49 +15,47 @@ our $ERROR = {
 	
 	30 => 'Bad location',
 	44 => 'Not found',
-};
+);
 
 sub register {
-	my ($self, $app, $conf) = @_;
+	my ($plugin, $app, $conf) = @_;
 	
-	my $error_msg = { %$ERROR };
-	$error_msg->{$_} = $conf->{error_msg}->{$_} for keys %{$conf->{error_msg}||{}};
+	$plugin->{error_msg} = { %ERROR_MSG };
+	$plugin->{error_msg}->{$_} = $conf->{error_msg}->{$_} for keys %{$conf->{error_msg}||{}};
 	
-	$app->renderer->add_helper(api_list => sub {
+	$app->helper(api_list => sub {
 		my $self = shift;
 		my($type, $list) = @_;
+		
 		my $normalize; $normalize = sub { 
 			my ($data, $class) = @_;
+			return unless $data;
 			
-			given (ref $data) {
-				when('HASH') {
-					for (keys %$data) {
-						if (ref $data->{$_}) {
-							$normalize->($data->{$_},$_);
-						} else {
-							next unless my $t = 
-								$conf->{'field'}->{$_}
-								 or 
-								$class ? $conf->{'class'}->{$class}->{$_} : ''
-							;
-							
-							$data->{$_} =
-								$t eq 'int'    ? int $data->{$_} :
-								$t eq 'string' ? "$data->{$_}"   :
-								$t eq 'float'  ? $data->{$_} + 0 : $data->{$_}
-							;
-						}
+			if (ref $data eq 'HASH') {
+				for (keys %$data) {
+					if (ref $data->{$_}) {
+						$normalize->($data->{$_},$_);
+					}
+					else {
+						my $t = $conf->{field}->{$_} || ($class ? $conf->{'class'}->{$class}->{$_} : '');
+						next unless $t;
+						
+						$data->{$_} =
+							$t eq 'int'    ? int $data->{$_} :
+							$t eq 'string' ? "$data->{$_}"   :
+							$t eq 'float'  ? $data->{$_} + 0 : $data->{$_}
+						;
 					}
 				}
-				when('ARRAY') {
-					$normalize->($_) for grep { ref $_ } @$data;
-				}
-			};
+			}
+			elsif (ref $data eq 'ARRAY') {
+				$normalize->($_) for grep { ref $_ } @$data;
+			}
 			
-			return $data;
+			$data;
 		};
 		
-		return $self->render_json({
+		$self->render('json', {
 			$type => {
 				list   => $normalize->($list),
 				params => $self->req->params->to_hash,
@@ -65,12 +63,12 @@ sub register {
 		});
 	});
 	
-	$app->renderer->add_helper(api_error => sub {
+	$app->helper(api_error => sub {
 		my $self  = shift;
 		my $param = { @_ };
 		
 		my $code  = $param->{code} || 1;
-		my $msg   = $error_msg->{ $code };
+		my $msg   = $plugin->{error_msg}->{ $code };
 		
 		$msg .= ': ' . join(', ', sort keys %{ $param->{params} || {}}) if $code == 4 && %{ $param->{params} || {}};
 		
@@ -79,11 +77,12 @@ sub register {
 				code => $code,
 				msg  => $msg,
 				
-				$param->{subcode} ? ( subcode => $param->{subcode}, submsg => $error_msg->{ $param->{subcode} }) : (),
+				$param->{subcode} ? ( subcode => $param->{subcode}, submsg => $plugin->{error_msg}->{ $param->{subcode} }) : (),
 				$param->{params } ? ( params  => $param->{params } ) : (),
 			},
 		};
-		return $self->render_json( $error );
+		
+		$self->render('json', $error);
 	});
 }
 
